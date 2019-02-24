@@ -55,6 +55,32 @@ NamingCols = function(String, data, startingValue) {
   return (data)
 }
 
+
+
+
+# Parameters ------------------------------------------------------------------------------------------------------------------
+
+n_Banks = 10
+m_Assets = 4
+linkProbabiliy = 0.5
+gamma = matrix(data = 0.05, nrow = n_Banks, ncol = 1)
+liquidity_factor = matrix(0, nrow = m_Assets, ncol = 1)
+for (i in 1:m_Assets) {
+  liquidity_factor[i] = 0.5  
+}
+daily_market_volume = 0.001
+assetReduction = 0.1 # Intial system shock 
+banks_buyback_parameter = 0
+numberIterations = 10
+method_selection = 2
+external_Trade_Dummy = 1
+
+# Generating the balance Sheet 
+asset_0 = 80
+cash_0 = 20
+liabilities_0 = 96 
+intial_Price = matrix(data = 1, nrow = m_Assets, ncol = 1)
+
 # Generating the bipartiate graph --------------------------------------------------------------------------------------------
 
 
@@ -84,15 +110,21 @@ BankruptcyCheck = function(balanceSheet, delta_asset) {
 }
 
 # Price Impact
-Price_Impact = function(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q, daily_market_volume, net_Volume_Traded) {
-  
+Price_Impact = function(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
+                        daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
+                        System_Update_Dummy) {
   # External trade is the demand for the asset outside of the financial system
-  external_Trade = matrix(System_Q * daily_market_volume, nrow = m_Assets, ncol = 1)
-  external_Trade = NamingRows("asset", external_Trade, 1) 
+  if (external_Trade_Dummy == 1) {
+    external_Trade = matrix(System_Q * daily_market_volume, nrow = m_Assets, ncol = 1)
+    external_Trade = NamingRows("asset", external_Trade, 1) 
+  } else {
+    external_Trade = 0
+  }
   
-  net_Volume_Traded = rowSums(decision_Volume_Traded) + net_Volume_Traded # + external_Trade
-  assign("net_Volume_Traded", net_Volume_Traded, envir = .GlobalEnv)
-  
+  if (System_Update_Dummy == 1) {
+    net_Volume_Traded = rowSums(decision_Volume_Traded) + net_Volume_Traded + external_Trade
+    assign("net_Volume_Traded", net_Volume_Traded, envir = .GlobalEnv)
+  }
   
   p_t1 = p_0 * exp(liquidity_factor * net_Volume_Traded/System_Q)
 
@@ -184,7 +216,36 @@ Lagrangian_Approach2 = function(x,i,q_t, p_0, liquidity_factor,net_Volume_Traded
   return(-LagrangianValue)
 }
 
-BankHolding_Liquidation = function(delta_asset, q_t, p_t, n_Banks, m_Assets, decision_Volume_Traded, balanceSheet, target_Leverage){
+Lagrangian_Approach2_Test = function(x, i, q_t, p_0, liquidity_factor,net_Volume_Traded, m_Assets, System_Q, external_Trade_Dummy) {
+  
+  lambda = x[1] 
+  decision_Volume_Traded = x[2:(m_Assets + 1)] 
+  
+  LagrangianValue = colSums(q_t[i, ] * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
+                                                    daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
+                                                    System_Update_Dummy = 0)) + 
+                    balanceSheet[i, 1] + balanceSheet[i, 3] - 
+                    lambda * (
+                              colSums((q_t[i, ] - decision_Volume_Traded) * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
+                                                                                         daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
+                                                                                         System_Update_Dummy = 0)) /
+                              (colSums(q_t[i, ] * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
+                                                               daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
+                                                               System_Update_Dummy = 0) + balanceSheet[i, 1] + balanceSheet[i, 3]) - target_Leverage[i]))
+  
+  # No short-selling                                                        
+  for (j in m_Assets) {
+    if (decision_Volume_Traded[j] > 0) {
+      LagrangianValue = -9999999999999999
+      break
+    }
+  }
+
+                              
+  return(-LagrangianValue)
+}
+
+BankHolding_Liquidation = function(delta_asset, q_t, p_t, n_Banks, m_Assets, decision_Volume_Traded, balanceSheet, target_Leverage, external_Trade_Dummy){
   
   decision_Volume_Traded = matrix(0, nrow = m_Assets, ncol = n_Banks)
   decision_Volume_Traded = NamingRows("asset", decision_Volume_Traded, 1) 
@@ -192,9 +253,9 @@ BankHolding_Liquidation = function(delta_asset, q_t, p_t, n_Banks, m_Assets, dec
   
   for (i in 1:n_Banks) {
     parameter_initial_values = matrix(1, nrow = 1 + m_Assets, ncol = 1)
-    OptimalValues = optim(parameter_initial_values, Lagrangian_Approach2,
+    OptimalValues = optim(parameter_initial_values, Lagrangian_Approach2_Test,
                           i = i, q_t = q_t, p_0 = p_0, liquidity_factor = liquidity_factor, net_Volume_Traded = net_Volume_Traded,
-                          m_Assets = m_Assets, System_Q = System_Q)
+                          m_Assets = m_Assets, System_Q = System_Q, external_Trade_Dummy = external_Trade_Dummy)
                     
     decision_Volume_Traded[, i] = OptimalValues$par[2:(m_Assets + 1)]
   }
@@ -203,14 +264,14 @@ BankHolding_Liquidation = function(delta_asset, q_t, p_t, n_Banks, m_Assets, dec
 
 # System actualisation rules --------------------------------------------------------------
 System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leverage, q_t, p_t, n_Banks, m_Assets, liquidity_factor, p_0,
-                          balanceSheet, banks_buyback_parameter) {
+                          balanceSheet, banks_buyback_parameter, external_Trade_Dummy) {
 
   # 2) Defines the liquidation schedule
 
   if (method_selection == 1) {
     decision_Volume_Traded = Prorata_Liquidation(q_t, p_t, n_Banks, m_Assets, balanceSheet)
   } else if (method_selection == 2) {
-    
+    decision_Volume_Traded = BankHolding_Liquidation(delta_asset, q_t, p_t, n_Banks, m_Assets, decision_Volume_Traded, balanceSheet, target_Leverage, external_Trade_Dummy)
   } else if (method_selection == 3) {
     
   } else {
@@ -218,7 +279,8 @@ System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leve
   }
   
   # 3) Calculate the price impact of decision_Volume_Traded
-  p_t = Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q, daily_market_volume, net_Volume_Traded)
+  p_t = Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q, daily_market_volume, 
+                     net_Volume_Traded, external_Trade_Dummy, System_Update_Dummy = 1)
   
   # 4) Settle the cash of the trade
   balanceSheet[, 2] = balanceSheet[, 2] - t(t(p_t) %*% decision_Volume_Traded)
@@ -246,25 +308,6 @@ System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leve
 
 # Execution Code ------------------------------------------------------------
 
-# Parameters
-n_Banks = 10
-m_Assets = 4
-linkProbabiliy = 0.5
-gamma = matrix(data = 0.05, nrow = n_Banks, ncol = 1)
-liquidity_factor = matrix(0, nrow = m_Assets, ncol = 1)
-  for (i in 1:m_Assets) {
-    liquidity_factor[i] = 0.5  
-  }
-daily_market_volume = 0.01
-assetReduction = 0.1 # Intial system shock 
-banks_buyback_parameter = 0
-numberIterations = 1
-
-# Generating the balance Sheet 
-asset_0 = 80
-cash_0 = 20
-liabilities_0 = 96 
-intial_Price = matrix(data = 1, nrow = m_Assets, ncol = 1)
 
 
 
@@ -366,8 +409,8 @@ prices_evolution = matrix(0, nrow = numberIterations, ncol = m_Assets)
 for (i in 1:numberIterations) {
   print("iteration:")
   print(i)
-  system_Update_Values = System_Update(method_selection = 1, gamma, balanceSheet[, 1], balanceSheet[, 4], target_Leverage, q_t, p_t, n_Banks, m_Assets, liquidity_factor, p_0,
-                balanceSheet, banks_buyback_parameter)
+  system_Update_Values = System_Update(method_selection, gamma, balanceSheet[, 1], balanceSheet[, 4], target_Leverage, q_t, p_t, n_Banks, m_Assets, liquidity_factor, p_0,
+                balanceSheet, banks_buyback_parameter, external_Trade_Dummy)
   asset_evolution[i] = sum(balanceSheet[, 1])
   prices_evolution[i,] = t(p_t)
   
@@ -381,5 +424,6 @@ for (i in 1:numberIterations) {
 plot(graph1, vertex.color=c("orange", "green")[1 + (V(graph1)$type == "TRUE")], 
      vertex.size = 5, vertex.label = NA) 
 plot(asset_evolution)
+
 
 
