@@ -55,31 +55,34 @@ NamingCols = function(String, data, startingValue) {
   return (data)
 }
 
-
-
-
 # Parameters ------------------------------------------------------------------------------------------------------------------
 
+# Generating Graph
 n_Banks = 10
 m_Assets = 4
 linkProbabiliy = 0.5
-gamma = matrix(data = 0.05, nrow = n_Banks, ncol = 1)
-liquidity_factor = matrix(0, nrow = m_Assets, ncol = 1)
-for (i in 1:m_Assets) {
-  liquidity_factor[i] = 0.5  
-}
-daily_market_volume = 0.001
-assetReduction = 0.1 # Intial system shock 
-banks_buyback_parameter = 0
-numberIterations = 10
-method_selection = 2
-external_Trade_Dummy = 1
 
 # Generating the balance Sheet 
 asset_0 = 80
 cash_0 = 20
 liabilities_0 = 96 
 intial_Price = matrix(data = 1, nrow = m_Assets, ncol = 1)
+
+# System rules parameters
+gamma = matrix(data = 0.05, nrow = n_Banks, ncol = 1)
+liquidity_factor = matrix(0, nrow = m_Assets, ncol = 1)
+for (i in 1:m_Assets) {
+  liquidity_factor[i] = 0.1
+}
+daily_market_volume = 0.01
+method_selection = 2
+external_Trade_Dummy = 0
+
+# Shock & Simulation
+assetReduction = 0.05
+numberIterations = 30
+
+
 
 # Generating the bipartiate graph --------------------------------------------------------------------------------------------
 
@@ -121,160 +124,168 @@ Price_Impact = function(decision_Volume_Traded, liquidity_factor, m_Assets, p_0,
     external_Trade = 0
   }
   
+  net_Volume_Traded = rowSums(decision_Volume_Traded) + net_Volume_Traded + external_Trade
+  
   if (System_Update_Dummy == 1) {
-    net_Volume_Traded = rowSums(decision_Volume_Traded) + net_Volume_Traded + external_Trade
     assign("net_Volume_Traded", net_Volume_Traded, envir = .GlobalEnv)
   }
+  p_t1 = p_0 * exp(liquidity_factor * net_Volume_Traded/System_Q)  
   
-  p_t1 = p_0 * exp(liquidity_factor * net_Volume_Traded/System_Q)
-
   return(p_t1)
 }
 
 # Liquidation Schedules ------------------------------------------------------------
 
-# Approach 1: Pro-Rata Liquidation
-Prorata_Liquidation = function(q_t, p_t, n_Banks, m_Assets, balanceSheet) {
-  
-  decision_Volume_Traded = matrix(0, nrow = m_Assets, ncol = n_Banks)
-  decision_Volume_Traded = NamingRows("asset", decision_Volume_Traded, 1) 
-  decision_Volume_Traded = NamingCols("bank", decision_Volume_Traded, 1)
-  q_copy = q_t
-  
-  
-  # Liquidation Quantity - Calculates delta_asset
-  delta_asset = matrix(0, nrow = n_Banks, ncol = 1)
-  bank_index_array = 1:n_Banks
-  for (i in 1:n_Banks) {
-    # bankruptcy check
-    if (balanceSheet[i, 1] + balanceSheet[i, 2] - balanceSheet[i, 3] < 0 ) {
-      decision_Volume_Traded[, i] = -t(q_t[i, ])
-      bank_index_array = bank_index_array[!bank_index_array %in% i]
-    } else {
-      delta_asset[i] = gamma[i] * balanceSheet[i, 1] * ((1 - (target_Leverage[i] * balanceSheet[i, 4])/balanceSheet[i, 1]))
-    }
-  }
-  for (i in bank_index_array) {
-    leftover_delta_asset = delta_asset[i]
-    # counts how many assets are held by each bank
-    count_Asset_Held = length(which(q_t[i, ] > 0))
-    # If it needs to liquidate:
-    if (delta_asset[i] != 0) {
-      # per asset monetary volume it needs to liquidate
-      per_Asset_Liquidation_Quantity = delta_asset[i] / count_Asset_Held
-
-      repeat{
-        test = 0
-        for (j in which(q_copy[i, ] > 0)) {
-          # If a bank does not have enough of one asset to liquidate on a pro-rata basis, 
-          # it liquidates all it has and then adapts how much it liquidates of other assets.
-          if (q_t[i, j] * p_t[j] < per_Asset_Liquidation_Quantity) {
-            # all the position in the asset is liquidated
-            decision_Volume_Traded[j, i] = - q_t[i, j]
-            q_copy[i, j] = 0
-            # The monetary value to be liquidated decreases
-            leftover_delta_asset = delta_asset[i] + rowSums(t(decision_Volume_Traded[, i] %*% p_t))
-            # Adapts the per_Asset_Liquidation_Quantity to new quantity/ liquidation value
-            count_Asset_Held = count_Asset_Held - 1
-            per_Asset_Liquidation_Quantity = leftover_delta_asset / count_Asset_Held 
-          } else {
-            test = test + 1
-          }
-        }
-        if (test == length(which(q_copy[i,] > 0))) {
-          break
-        }
-      }
-    }
-    # If there are some assets for which the bank can fully liquidate, it liquidates equal amounts:
-    if (count_Asset_Held > 0) {
-      # Identifies the index of the assets where the bank still holds a position:
-      assign_Vector = which((q_copy[i, ] + decision_Volume_Traded[, i]) > 0)
-      for (q in assign_Vector) {
-        decision_Volume_Traded[assign_Vector, i] = -leftover_delta_asset / count_Asset_Held
-      }
-    }
-  }
-  return(decision_Volume_Traded)
-}
 
 # Approach 2: Liquidation based on bank holdings:
 # WIP !!
 
-Lagrangian_Approach2 = function(x,i,q_t, p_0, liquidity_factor,net_Volume_Traded, m_Assets, System_Q) {
-  
-  lambda = x[1] 
-  decision_Volume_Traded = x[2:(m_Assets + 1)] 
-  
-  
-  LagrangianValue = colSums(q_t[i, ] * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded))) + 
-    balanceSheet[i, 1] + balanceSheet[i, 3] - 
-    lambda * (
-      colSums((q_t[i, ] - decision_Volume_Traded) * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded)/System_Q)) /
-        (colSums(q_t[i, ] * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded)/System_Q)) + balanceSheet[i, 1] + balanceSheet[i, 3])
-     - target_Leverage[i])
-  return(-LagrangianValue)
-}
+# Lagrangian_Approach2 = function(x,i,q_t, p_0, liquidity_factor,net_Volume_Traded, m_Assets, System_Q) {
+#   
+#   lambda = x[1] 
+#   decision_Volume_Traded = matrix(x[2:(m_Assets + 1)], nrow = m_Assets, ncol = 1)
+#   
+#   
+#   LagrangianValue = colSums(q_t[i, ] * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded))) + 
+#     balanceSheet[i, 1] + balanceSheet[i, 3] - 
+#     lambda * (
+#       colSums((q_t[i, ] - decision_Volume_Traded) * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded)/System_Q)) /
+#         (colSums(q_t[i, ] * p_0 * exp(-liquidity_factor * (net_Volume_Traded + decision_Volume_Traded)/System_Q)) + balanceSheet[i, 1] + balanceSheet[i, 3])
+#      - target_Leverage[i])
+#   return(-LagrangianValue)
+# }
 
-Lagrangian_Approach2_Test = function(x, i, q_t, p_0, liquidity_factor,net_Volume_Traded, m_Assets, System_Q, external_Trade_Dummy) {
+Lagrangian_Approach2_Test = function(x, i, q_t, p_0, liquidity_factor,net_Volume_Traded, 
+                                     m_Assets, System_Q, delta_asset, external_Trade_Dummy) {
   
   lambda = x[1] 
-  decision_Volume_Traded = x[2:(m_Assets + 1)] 
+  decision_Volume_Traded = matrix(x[2:(m_Assets + 1)], nrow = m_Assets, ncol = 1)
   
-  LagrangianValue = colSums(q_t[i, ] * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
-                                                    daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
-                                                    System_Update_Dummy = 0)) + 
-                    balanceSheet[i, 1] + balanceSheet[i, 3] - 
-                    lambda * (
-                              colSums((q_t[i, ] - decision_Volume_Traded) * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
-                                                                                         daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
-                                                                                         System_Update_Dummy = 0)) /
-                              (colSums(q_t[i, ] * Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
-                                                               daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
-                                                               System_Update_Dummy = 0) + balanceSheet[i, 1] + balanceSheet[i, 3]) - target_Leverage[i]))
+  LagrangianValue = colSums(q_t[i, ] * 
+                            (p_t - Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
+                                                daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
+                                                System_Update_Dummy = 0))) - 
+                            lambda * (colSums(decision_Volume_Traded * p_t) + delta_asset[i])
   
-  # No short-selling                                                        
-  for (j in m_Assets) {
-    if (decision_Volume_Traded[j] > 0) {
-      LagrangianValue = -9999999999999999
-      break
+  if (max(decision_Volume_Traded) > 0) {
+    LagrangianValue = 9999999
+  }
+
+  for (j in 1:m_Assets) {
+    if (q_t[i, j] - decision_Volume_Traded[j] < 0 ) {
+      LagrangianValue = 9999999
     }
   }
-
-                              
-  return(-LagrangianValue)
-}
-
-BankHolding_Liquidation = function(delta_asset, q_t, p_t, n_Banks, m_Assets, decision_Volume_Traded, balanceSheet, target_Leverage, external_Trade_Dummy){
   
-  decision_Volume_Traded = matrix(0, nrow = m_Assets, ncol = n_Banks)
-  decision_Volume_Traded = NamingRows("asset", decision_Volume_Traded, 1) 
-  decision_Volume_Traded = NamingCols("bank", decision_Volume_Traded, 1)
-  
-  for (i in 1:n_Banks) {
-    parameter_initial_values = matrix(1, nrow = 1 + m_Assets, ncol = 1)
-    OptimalValues = optim(parameter_initial_values, Lagrangian_Approach2_Test,
-                          i = i, q_t = q_t, p_0 = p_0, liquidity_factor = liquidity_factor, net_Volume_Traded = net_Volume_Traded,
-                          m_Assets = m_Assets, System_Q = System_Q, external_Trade_Dummy = external_Trade_Dummy)
-                    
-    decision_Volume_Traded[, i] = OptimalValues$par[2:(m_Assets + 1)]
-  }
-  return(decision_Volume_Traded)
+  return(LagrangianValue)
 }
 
 # System actualisation rules --------------------------------------------------------------
 System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leverage, q_t, p_t, n_Banks, m_Assets, liquidity_factor, p_0,
-                          balanceSheet, banks_buyback_parameter, external_Trade_Dummy) {
+                          balanceSheet, external_Trade_Dummy) {
 
   # 2) Defines the liquidation schedule
-
+  
+  # Approach 1: Pro-Rata Liquidation            -----------
   if (method_selection == 1) {
-    decision_Volume_Traded = Prorata_Liquidation(q_t, p_t, n_Banks, m_Assets, balanceSheet)
-  } else if (method_selection == 2) {
-    decision_Volume_Traded = BankHolding_Liquidation(delta_asset, q_t, p_t, n_Banks, m_Assets, decision_Volume_Traded, balanceSheet, target_Leverage, external_Trade_Dummy)
-  } else if (method_selection == 3) {
     
-  } else {
+    decision_Volume_Traded = matrix(0, nrow = m_Assets, ncol = n_Banks)
+    decision_Volume_Traded = NamingRows("asset", decision_Volume_Traded, 1) 
+    decision_Volume_Traded = NamingCols("bank", decision_Volume_Traded, 1)
+    q_copy = q_t
+    
+    
+    # Liquidation Quantity - Calculates delta_asset
+    delta_asset = matrix(0, nrow = n_Banks, ncol = 1)
+    bank_index_array = 1:n_Banks
+    for (i in 1:n_Banks) {
+      # bankruptcy check
+      if (balanceSheet[i, 1] + balanceSheet[i, 2] - balanceSheet[i, 3] < 0 ) {
+        decision_Volume_Traded[, i] = -t(q_t[i, ])
+        bank_index_array = bank_index_array[!bank_index_array %in% i]
+      } else {
+        delta_asset[i] = gamma[i] * balanceSheet[i, 1] * ((1 - (target_Leverage[i] * balanceSheet[i, 4])/balanceSheet[i, 1]))
+      }
+    }
+    for (i in bank_index_array) {
+      leftover_delta_asset = delta_asset[i]
+      # counts how many assets are held by each bank
+      count_Asset_Held = length(which(q_t[i, ] > 0))
+      # If it needs to liquidate:
+      if (delta_asset[i] != 0) {
+        # per asset monetary volume it needs to liquidate
+        per_Asset_Liquidation_Quantity = delta_asset[i] / count_Asset_Held
+        
+        repeat{
+          test = 0
+          for (j in which(q_copy[i, ] > 0)) {
+            # If a bank does not have enough of one asset to liquidate on a pro-rata basis, 
+            # it liquidates all it has and then adapts how much it liquidates of other assets.
+            if (q_t[i, j] * p_t[j] < per_Asset_Liquidation_Quantity) {
+              # all the position in the asset is liquidated
+              decision_Volume_Traded[j, i] = - q_t[i, j]
+              q_copy[i, j] = 0
+              # The monetary value to be liquidated decreases
+              leftover_delta_asset = delta_asset[i] + rowSums(t(decision_Volume_Traded[, i] %*% p_t))
+              # Adapts the per_Asset_Liquidation_Quantity to new quantity/ liquidation value
+              count_Asset_Held = count_Asset_Held - 1
+              per_Asset_Liquidation_Quantity = leftover_delta_asset / count_Asset_Held 
+            } else {
+              test = test + 1
+            }
+          }
+          if (test == length(which(q_copy[i,] > 0))) {
+            break
+          }
+        }
+      }
+      # If there are some assets for which the bank can fully liquidate, it liquidates equal amounts:
+      if (count_Asset_Held > 0) {
+        # Identifies the index of the assets where the bank still holds a position:
+        assign_Vector = which((q_copy[i, ] + decision_Volume_Traded[, i]) > 0)
+        for (q in assign_Vector) {
+          decision_Volume_Traded[assign_Vector, i] = -leftover_delta_asset / count_Asset_Held
+        }
+      }
+    }
+     
+  } 
+  # Approach 2: Bank Holding Liqudiation        ----------- 
+  else if (method_selection == 2) {
+  
+    decision_Volume_Traded = matrix(0, nrow = m_Assets, ncol = n_Banks)
+    decision_Volume_Traded = NamingRows("asset", decision_Volume_Traded, 1) 
+    decision_Volume_Traded = NamingCols("bank", decision_Volume_Traded, 1)
+    
+    # Liquidation quantity
+    delta_asset = matrix(0, nrow = n_Banks, ncol = 1)
+
+    for (i in 1:n_Banks) {
+      # Liquidate everything if bankrupt
+      if (balanceSheet[i, 1] + balanceSheet[i, 2] - balanceSheet[i, 3] < 0 ) {
+        decision_Volume_Traded[, i] = -t(q_t[i, ])
+      
+      # if not bankrupt
+      } else {
+        
+        delta_asset[i] = gamma[i] * balanceSheet[i, 1] * ((1 - (target_Leverage[i] * balanceSheet[i, 4])/balanceSheet[i, 1]))
+        
+        parameter_initial_values = matrix(c(1, -0.1 *q_t[i,]), nrow = 1 + m_Assets, ncol = 1)
+        
+        OptimalValues = optim(x = parameter_initial_values, Lagrangian_Approach2_Test,
+                              i = i, q_t = q_t, p_0 = p_0, liquidity_factor = liquidity_factor, net_Volume_Traded = net_Volume_Traded,
+                              m_Assets = m_Assets, System_Q = System_Q, delta_asset = delta_asset, external_Trade_Dummy = external_Trade_Dummy)
+        
+        decision_Volume_Traded[, i] = OptimalValues$par[2:(m_Assets + 1)]
+      }
+    }
+  } 
+  # Approach 3: Expectation Liquidation         ----------- 
+  else if (method_selection == 3) {
+    
+  } 
+  # Approach 4: Perfect Information Liquidation ----------- 
+  else {
     
   }
   
@@ -296,7 +307,7 @@ System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leve
   
   # The funciton should return: the prices, the balance sheets, the quantities, 
   
-  return(list("balanceSheet" = balanceSheet, "Quantities" = q_t, "Prices" = p_t))
+  return(list("balanceSheet" = balanceSheet, "Quantities" = q_t, "Prices" = p_t, "decision_Volume_Traded" = decision_Volume_Traded))
 }
 
 # On top of this: 
@@ -395,6 +406,7 @@ net_Volume_Traded = matrix(0, nrow = m_Assets, ncol = 1)
 # Shocking the system via price reduction
 assetChoice = sample(assetChoiceVector, 1)
 p_t[assetChoice] = (1 - assetReduction) * p_t[assetChoice]
+p_0 = p_t
 
 # Updating asset values
 balanceSheet[, 1] = q_t %*% p_t
@@ -405,18 +417,20 @@ balanceSheet[, 4] = balanceSheet[, 1] + balanceSheet[, 2] - balanceSheet[, 3]
 
 asset_evolution = matrix(0, nrow = numberIterations, ncol =1)
 prices_evolution = matrix(0, nrow = numberIterations, ncol = m_Assets)
+decision_Volume = array(data = NA, dim = c(n_Banks, m_Assets, numberIterations))
 # Simulating one system
 for (i in 1:numberIterations) {
   print("iteration:")
   print(i)
   system_Update_Values = System_Update(method_selection, gamma, balanceSheet[, 1], balanceSheet[, 4], target_Leverage, q_t, p_t, n_Banks, m_Assets, liquidity_factor, p_0,
-                balanceSheet, banks_buyback_parameter, external_Trade_Dummy)
+                balanceSheet, external_Trade_Dummy)
   asset_evolution[i] = sum(balanceSheet[, 1])
   prices_evolution[i,] = t(p_t)
   
   balanceSheet = system_Update_Values$balanceSheet
   q_t = system_Update_Values$Quantities
   p_t = system_Update_Values$Prices
+  decision_Volume[,,i] = system_Update_Values$decision_Volume_Traded
   print("asset_evolution:")
   print(asset_evolution[i])
   plot(asset_evolution[1:i] , type="p", col="black")  
