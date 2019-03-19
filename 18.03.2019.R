@@ -58,8 +58,8 @@ NamingCols = function(String, data, startingValue) {
 # Parameters ------------------------------------------------------------------------------------------------------------------
 
 # Generating Graph
-n_Banks = 10
-m_Assets = 4
+n_Banks = 100
+m_Assets = 40
 linkProbabiliy = 0.5
 
 # Generating the balance Sheet 
@@ -155,27 +155,29 @@ Price_Impact = function(decision_Volume_Traded, liquidity_factor, m_Assets, p_0,
 #   return(-LagrangianValue)
 # }
 
-Lagrangian_Approach2_Test = function(x, i, q_t, p_0, liquidity_factor,net_Volume_Traded, 
+Lagrangian_Approach2_Test = function(x, i, q_t, p_0, liquidity_factor, net_Volume_Traded, 
                                      m_Assets, System_Q, delta_asset, external_Trade_Dummy) {
   
-  lambda = x[1] 
-  decision_Volume_Traded = matrix(x[2:(m_Assets + 1)], nrow = m_Assets, ncol = 1)
+  # lambda = x[1] 
+  # decision_Volume_Traded = matrix(x[2:(m_Assets + 1)], nrow = m_Assets, ncol = 1)
+  decision_Volume_Traded = x
   
-  LagrangianValue = colSums(q_t[i, ] * 
-                            (p_t - Price_Impact(decision_Volume_Traded, liquidity_factor, m_Assets, p_0, System_Q,
-                                                daily_market_volume, net_Volume_Traded, external_Trade_Dummy, 
-                                                System_Update_Dummy = 0))) - 
-                            lambda * (colSums(decision_Volume_Traded * p_t) + delta_asset[i])
-  
-  if (max(decision_Volume_Traded) > 0) {
-    LagrangianValue = 9999999
-  }
+  LagrangianValue = colSums(q_t[i, ] * (p_t - p_0 * exp(liquidity_factor * net_Volume_Traded/System_Q))) #  - colSums(decision_Volume_Traded * p_t) + delta_asset[i]
 
-  for (j in 1:m_Assets) {
-    if (q_t[i, j] - decision_Volume_Traded[j] < 0 ) {
-      LagrangianValue = 9999999
-    }
-  }
+  
+  if (- colSums(decision_Volume_Traded * p_t) - delta_asset[i] < 0) {
+     LagrangianValue = 9999999
+   } 
+    
+  # if (max(decision_Volume_Traded) > 0) {
+  #   LagrangianValue = 9999999
+  # }
+  # 
+  # for (j in 1:m_Assets) {
+  #   if (q_t[i, j] - decision_Volume_Traded[j] < 0 ) {
+  #     LagrangianValue = 9999999
+  #   }
+  # }
   
   return(LagrangianValue)
 }
@@ -270,13 +272,14 @@ System_Update = function(method_selection, gamma, asset_t, equity_t, target_Leve
         
         delta_asset[i] = gamma[i] * balanceSheet[i, 1] * ((1 - (target_Leverage[i] * balanceSheet[i, 4])/balanceSheet[i, 1]))
         
-        parameter_initial_values = matrix(c(1, -0.1 *q_t[i,]), nrow = 1 + m_Assets, ncol = 1)
+        # parameter_initial_values = matrix(c(1, -0.1 *q_t[i,]), nrow = 1 + m_Assets, ncol = 1)
+        parameter_initial_values = matrix(-0.1 * q_t[i,], nrow = m_Assets, ncol = 1)
         
-        OptimalValues = optim(x = parameter_initial_values, Lagrangian_Approach2_Test,
+        OptimalValues = optim(parameter_initial_values, Lagrangian_Approach2_Test,
                               i = i, q_t = q_t, p_0 = p_0, liquidity_factor = liquidity_factor, net_Volume_Traded = net_Volume_Traded,
                               m_Assets = m_Assets, System_Q = System_Q, delta_asset = delta_asset, external_Trade_Dummy = external_Trade_Dummy)
         
-        decision_Volume_Traded[, i] = OptimalValues$par[2:(m_Assets + 1)]
+        decision_Volume_Traded[, i] = OptimalValues$par
       }
     }
   } 
